@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 Spectral Normalization from https://arxiv.org/abs/1802.05957
 References:
@@ -143,7 +145,7 @@ class SpectralNorm(object):
         Overwrites certain keyword arguments with their counterparts in `args`.
 
         Args:
-            args (argparse.Namespace): The namespace which holds the arguments.
+            args: DEQConfig or legacy config object.
             learn_scale (bool): Learn the scale factor.
             target_norm (float): Target normalization value.
             clip (bool): Clip the norm to prevent explosion.
@@ -153,6 +155,12 @@ class SpectralNorm(object):
         Returns:
             tuple: Tuple containing the overwritten arguments.
         """
+        if hasattr(args, 'norm_no_scale'):
+            return not args.norm_no_scale, \
+                    args.norm_target_norm, \
+                    args.norm_clip, \
+                    args.norm_clip_value, \
+                    args.sn_n_power_iters
         return not args.get('norm_no_scale', not learn_scale), \
                 args.get('norm_target_norm', target_norm), \
                 args.get('norm_clip', clip), \
@@ -203,7 +211,8 @@ class SpectralNorm(object):
         if type(dims) is int:
             dims = [dims]
     
-        assert len(names) == len(dims)
+        if len(names) != len(dims):
+            raise ValueError(f"names and dims must have the same length, got {len(names)} and {len(dims)}")
 
         learn_scale, target_norm, clip, clip_value, n_power_iterations = \
                 cls.overwrite_kwargs(deq_args, learn_scale, target_norm, clip, clip_value, n_power_iterations)
@@ -236,13 +245,13 @@ class SpectralNorm(object):
             
         return fn
     
+    @torch.compiler.disable
     def __call__(self, module):
         """
         Recomputes the spectral normalization on the module weights.
 
-        Typically, every time the module is called we need to recompute the weight. However,
-        in the case of DEQ, the same weight is shared across layers, and we can save
-        a lot of intermediate memory by just recomputing once (at the beginning of first call).
+        Decorated with ``@torch.compiler.disable`` since this runs once per iteration
+        (via ``reset_norm``) before the compiled solver loop, not inside it.
 
         Args:
             module (torch.nn.Module): The module to apply spectral normalization to.

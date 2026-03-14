@@ -1,7 +1,9 @@
+from __future__ import annotations
+
 import torch
 
 
-def mixed_init(z_shape, device=None):
+def mixed_init(z_shape: tuple, device: torch.device | None = None) -> torch.Tensor:
     """
     Initializes a tensor with a shape of `z_shape` with half Gaussian random values and hald zeros.
 

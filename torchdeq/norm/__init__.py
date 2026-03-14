@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 The `torchdeq.norm` module provides a set of tools for managing normalization in Deep Equilibrium Models (DEQs). 
 It includes factory functions for applying, resetting, and removing normalization, 

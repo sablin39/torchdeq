@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import numpy as np
 
 import torch
@@ -130,7 +132,8 @@ def deq_decorator(func, z_init=None, no_stat=True):
     if torch.is_tensor(z_init):
         return DEQWrapper(func, z_init), z_init
     else:
-        assert type(z_init) in (tuple, list)
+        if type(z_init) not in (tuple, list):
+            raise ValueError(f"z_init must be a tensor, list, or tuple, got {type(z_init)}")
         
         if no_stat:
             return SpeedyMDEQWrapper(func, z_init), z_init

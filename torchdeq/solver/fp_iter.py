@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from .utils import (batch_flatten, dummy_solver_stat,
                     solver_stat_from_final_step,
                     solver_stat_from_info, init_solver_info,

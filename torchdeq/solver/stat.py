@@ -1,18 +1,20 @@
+from __future__ import annotations
+
 import torch
 
 
 class SolverStat(dict):
-    """
+    r"""
     A class for storing solver statistics.
 
     This class is a subclass of dict, which allows users to query the solver statistics as dictionary keys.
 
     Valid Keys:
-        - ``'abs_lowest'``: 
+        - ``'abs_lowest'``:
             The lowest absolute fixed point errors achieved, i.e. :math:`\|z - f(z)\|`.
             torch.Tensor of shape :math:`(B,)`.
-        - ``'rel_lowest'``: 
-            The lowest relative fixed point errors achieved, i.e., :math:`\|z - f(z)\| / \|f(z)\|`. 
+        - ``'rel_lowest'``:
+            The lowest relative fixed point errors achieved, i.e., :math:`\|z - f(z)\| / \|f(z)\|`.
             torch.Tensor of shape :math:`(B,)`.
         - ``'abs_trace'``:
             The absolute fixed point errors achieved along the solver steps.
@@ -23,7 +25,7 @@ class SolverStat(dict):
         - ``'nstep'``:
             The number of step when the fixed point errors were achieved.
             torch.Tensor of shape :math:`(B,)`.
-        - ``'sradius'``: 
+        - ``'sradius'``:
             Optional. The largest (abs.) eigenvalue estimated by power method.
             Available in the eval mode when ``sradius_mode`` set to ``True``.
             torch.Tensor of shape :math:`(B,)`.

@@ -1,8 +1,10 @@
+from __future__ import annotations
+
 """
 A module containing several implementations of variational dropout.
 
-Variational dropout is a type of dropout where a single dropout mask is generated once per sample 
-and applied consistently across all solver steps in the sample. This is particularly effective when used with 
+Variational dropout is a type of dropout where a single dropout mask is generated once per sample
+and applied consistently across all solver steps in the sample. This is particularly effective when used with
 implicit models, as it counters overfitting while preserving the dynamics.
 
 This module provides variational dropout for 1d, 2d, and 3d inputs, with both channel-wise and token-wise options.
@@ -345,13 +347,13 @@ class VariationalDropToken3d(_VariationalDropoutNd):
         self.mask = mask
 
 
-def reset_dropout(model):
+def reset_dropout(model: torch.nn.Module) -> None:
     """
-    Resets the dropout mask for all variational dropout layers in the model 
+    Resets the dropout mask for all variational dropout layers in the model
     at the beginning of a training iteration.
 
     Args:
-        model (torch.nn.Module): A DEQ layer in which the dropout masks should be reset.
+        model: A DEQ layer in which the dropout masks should be reset.
     """
     for module in model.modules():
         if isinstance(module, _VariationalDropoutNd):

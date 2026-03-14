@@ -1,10 +1,12 @@
+from __future__ import annotations
+
 '''
 References:
-    https://github.com/locuslab/deq 
+    https://github.com/locuslab/deq
     https://github.com/pv/scipy-work/tree/master/scipy/optimize
 '''
 import torch
-import numpy as np 
+import numpy as np
 
 from .utils import init_solver_info, batch_flatten, update_state, solver_stat_from_info
 
@@ -12,9 +14,9 @@ from .utils import init_solver_info, batch_flatten, update_state, solver_stat_fr
 __all__ = ['broyden_solver']
 
 
-def _safe_norm(v):
+def _safe_norm(v: torch.Tensor) -> torch.Tensor:
     if not torch.isfinite(v).all():
-        return np.inf
+        return torch.tensor(float('inf'), device=v.device, dtype=v.dtype)
     return torch.norm(v)
 
 
@@ -69,8 +71,6 @@ def line_search(update, x0, g0, g, nstep=0, on=True):
     tmp_s = [0]
     tmp_g0 = [g0]
     tmp_phi = [torch.norm(g0)**2]
-    s_norm = torch.norm(x0) / torch.norm(update)
-
     def phi(s, store=True):
         if s == tmp_s[0]:
             return tmp_phi[0]    # If the step size is so small... just return something
@@ -201,7 +201,8 @@ def broyden_solver(func, x0,
             indexing_list.append(lowest_xest)
 
         new_objective = trace_dict[stop_mode][-1].max() 
-        if not return_final and new_objective < tol: break
+        if not return_final and new_objective < tol:
+            break
         
         # Check for lack of progress
         if nstep > 30:
@@ -215,8 +216,8 @@ def broyden_solver(func, x0,
         part_Us, part_VTs = Us[:,:,:nstep-1], VTs[:,:nstep-1]
         vT = rmatvec(part_Us, part_VTs, delta_x)
         u = (delta_x - matvec(part_Us, part_VTs, delta_gx)) / torch.einsum('bd,bd->b', vT, delta_gx)[:,None]
-        vT[vT != vT] = 0
-        u[u != u] = 0
+        vT = torch.nan_to_num(vT, nan=0.0)
+        u = torch.nan_to_num(u, nan=0.0)
         VTs[:,(nstep-1) % LBFGS_thres] = vT
         Us[:,:,(nstep-1) % LBFGS_thres] = u
         update = -matvec(Us[:,:,:nstep], VTs[:,:nstep], gx)

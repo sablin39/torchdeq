@@ -1,31 +1,34 @@
-"""
-The `torchdeq.grad` module offers a factory function, `backward_factory`, 
-which is designed to facilitate the customization of various differentiation methods during the backward pass. 
+from __future__ import annotations
 
-This function is integral to the construction of the backward computational graph in the DEQ class, 
+"""
+The `torchdeq.grad` module offers a factory function, `backward_factory`,
+which is designed to facilitate the customization of various differentiation methods during the backward pass.
+
+This function is integral to the construction of the backward computational graph in the DEQ class,
 as it is invoked multiple times to generate gradient functors.
 
-While the backward_factory function is a powerful tool, it is generally not recommended for direct use outside of the library. 
-Instead, users should primarily interact with the DEQ class via the `torch.core` entry point for most DEQ computations. 
+While the backward_factory function is a powerful tool, it is generally not recommended for direct use outside of the library.
+Instead, users should primarily interact with the DEQ class via the `torch.core` entry point for most DEQ computations.
 This approach ensures the appropriate and efficient use of the library's features.
 """
 import torch
 from torch import autograd
+from typing import Callable
 
 
 __all__ = ['backward_factory']
 
 
-def make_pair(target, source):
+def make_pair(target: list, source: list) -> list:
     """
     Aligns the argument sequence between target and source.
 
     Args:
-        target (list): The target list for alignment.
-        source (list): The source list for alignment.
+        target: The target list for alignment.
+        source: The source list for alignment.
 
     Returns:
-        list: The aligned source.
+        The aligned source.
 
     Raises:
         ValueError: If the length of source is neither 1 nor equal to the length of target.
@@ -39,135 +42,82 @@ def make_pair(target, source):
 
 
 def backward_factory(
-        grad_type='ift',
-        hook_ift=False,
-        b_solver=None, 
-        b_solver_kwargs=dict(),
-        sup_gap=-1,
-        sup_loc=None,
-        tau=1.0,
-        **grad_factory_kwargs):
+        grad_type: str | int = 'ift',
+        hook_ift: bool = False,
+        b_solver: Callable | None = None,
+        b_solver_kwargs: dict | None = None,
+        sup_gap: int = -1,
+        sup_loc: list[int] | None = None,
+        tau: float = 1.0,
+        **grad_factory_kwargs,
+) -> Callable:
     """
-    Factory for the backward pass of implicit deep learning, e.g., DEQ (implicit models), 
-    Hamburger (optimization layers), etc.
-    This function implements various gradients like Implicit Differentiation (IFT), 1-step Grad and Phantom Grad.
+    Factory for the backward pass of implicit deep learning.
 
-    Implicit Differentiation:
-        [2018-ICML] Reviving and Improving Recurrent Back-Propagation
-
-        [2019-NeurIPS] Deep Equilibrium Models
-        
-        [2019-NeurIPS] Meta-Learning with Implicit Gradients
-        
-        ...
-    1-step Grad & Higher-order Grad:
-        [2021-ICLR] Is Attention Better Than Matrix Decomposition? 
-        
-        [2022-AAAI] JFB: Jacobian-Free Backpropagation for Implicit Networks
-        
-        [2021-NeurIPS] On Training Implicit Models
-
-        ...
-        
     Args:
-        grad_type (str, int, optional): 
-            Gradient type to use. grad_type should be ``'ift'`` for IFT or an int for PhantomGrad. Default ``'ift'``. 
-            Set to ``'ift'`` to enable the implicit differentiation (IFT) mode.
-            When passing a number ``k`` to this function, it runs UPG with steps ``k`` and damping factor ``tau``.
-        hook_ift (bool, optional): 
-            Set to ``True`` to enable an :math:`\Omega(1)` memory (w.r.t. activations) implementation using the Pytorch hook for IFT. 
+        grad_type: Gradient type. ``'ift'`` for IFT or an int for PhantomGrad. Default ``'ift'``.
+        hook_ift: Use hook-based O(1) memory IFT. Default False.
+        b_solver: Solver for IFT backward pass. Default None.
+        b_solver_kwargs: Backward solver keyword arguments. Default None.
+        sup_gap: Sampling gap for PhantomGrad trajectories. Default -1.
+        sup_loc: Sampling locations for PhantomGrad. Default None.
+        tau: Damping factor for PhantomGrad. Default 1.0.
+        grad_factory_kwargs: Extra arguments are ignored.
 
-            Set to ``False`` to enable the :math:`\Omega(2)` memory implementation using ``torch.autograd.Function`` to avoid 
-            the (potential) segment fault in older PyTorch versions.
-
-            Note that the ``torch.autograd.Function`` implementation is more stable than this hook in numerics and execution,
-            even though they should be conceptually the same.
-            For PyTorch version < 1.7.1 on some machines, this :math:`\Omega(1)` hook seems to trigger a segment fault after some training steps.
-            This issue is not caused by TorchDEQ but rather due to the hook.remove() call and some interactions between Python and PyTorch. 
-            The ``torch.autograd.Function`` implementation also introduces slightly better numerical stability
-            when the forward solver introduces some fixed point errors.
-
-            Default ``False``.
-        b_solver (str, optional):
-            Solver for the IFT backward pass. Default None.
-            Supported solvers: ``'anderson'``, ``'broyden'``, ``'fixed_point_iter'``, ``'simple_fixed_point_iter'``.
-        b_solver_kwargs (dict, optional):
-            Collection of backward solver kwargs, e.g., 
-            max_iter (int, optional), max steps for the backward solver, 
-            stop_mode (str, optional), criterion for convergence, etc.
-            See torchdeq.solver for all kwargs.
-        sup_gap (int, optional): 
-            The gap for uniformly sampling trajectories from PhantomGrad. Sample every ``sup_gap`` states if ``sup_gap > 0``. Default -1.
-        sup_loc (list[int], optional): 
-            Specifies trajectory steps or locations in PhantomGrad from which to sample. Default None.
-        tau (float, optional):
-            Damping factor for PhantomGrad. Default 1.0.
-            0.5-0.7 is recommended for MDEQ. 1.0 for DEQ flow.
-            For DEQ flow, the gating function in GRU naturally produces adaptive tau values. 
-        grad_factory_kwargs:
-            Extra arguments are ignored.
-    
     Returns:
-        callable: 
-            A gradient functor for implicit deep learning. The function takes trainer, func and z_pred as arguments
-            and returns a list of tensors with the gradient information.        
-        
-            Args:
-                trainer (torch.nn.Module): 
-                    the module that employs implicit deep learning.
-                func (type): 
-                    function that defines the `f` in `z = f(z)`.
-                z_pred (torch.Tensor): 
-                    latent state to run the backward pass.
-                writer (callable, optional): 
-                    Callable function to monitor the backward pass. It should accept the solver statistics dictionary as input. Default None.
-        
-            Returns:
-                list[torch.Tensor]: 
-                    a list of tensors that tracks the gradient info.
-                    These tensors can be directly applied to downstream networks,
-                    while all the gradient info will be automatically tracked in the backward pass.
+        A gradient functor for implicit deep learning.
     """
-     # IFT grad
+    if b_solver_kwargs is None:
+        b_solver_kwargs = {}
+
+    # IFT grad
     if grad_type == 'ift':
         if hook_ift:
             # IFT via Pytorch hook mechanism
-            def hook_ift_grad(trainer, func, z_pred, writer=None, **kwargs):
+            @torch.compiler.disable
+            def hook_ift_grad(
+                trainer: torch.nn.Module,
+                func: Callable,
+                z_pred: torch.Tensor,
+                writer: Callable | None = None,
+                **kwargs,
+            ) -> list[torch.Tensor]:
                 z_pred = z_pred.requires_grad_()
                 new_z_pred = func(z_pred)        # 1-step grad for df/dtheta
-                
-                def backward_hook(grad):
+
+                def backward_hook(grad: torch.Tensor) -> torch.Tensor:
                     if trainer.hook is not None:
                         trainer.hook.remove()    # To avoid infinite loop
                     grad_star, _, info = b_solver(
-                            lambda y: autograd.grad(new_z_pred, z_pred, y, retain_graph=True)[0] + grad, 
+                            lambda y: autograd.grad(new_z_pred, z_pred, y, retain_graph=True)[0] + grad,
                             torch.zeros_like(grad), **b_solver_kwargs
                             )
                     if writer:
                         writer(info)
                     return grad_star
                 trainer.hook = new_z_pred.register_hook(backward_hook)
-                
+
                 return [new_z_pred]
             return hook_ift_grad
         else:
             # IFT via torch.autograd.Function
             class IFTGrad(torch.autograd.Function):
                 @staticmethod
-                def forward(ctx, func, z_pred, writer):
+                def forward(ctx, func: Callable, z_pred: torch.Tensor, writer: Callable | None) -> torch.Tensor:
                     ctx.func, ctx.writer = func, writer
                     ctx.save_for_backward(z_pred.detach())
                     return z_pred
 
                 @staticmethod
-                def backward(ctx, grad):
+                @torch.compiler.disable
+                def backward(ctx, grad: torch.Tensor) -> tuple[None, torch.Tensor, None]:
                     func, writer = ctx.func, ctx.writer
                     z_pred, = ctx.saved_tensors
 
                     h = z_pred.clone().detach().requires_grad_()
                     with torch.enable_grad():
                         f = func(h)
-        
+
                     grad_f = lambda x: autograd.grad(f, h, x, retain_graph=True)[0] + grad
                     grad_star, _, info = b_solver(
                             grad_f, torch.zeros_like(grad), **b_solver_kwargs
@@ -176,19 +126,32 @@ def backward_factory(
                         writer(info)
 
                     return (None, grad_star, None)
-            def func_ift(_, func, z_pred, writer=None, **kwargs):
+
+            def func_ift(
+                _: torch.nn.Module,
+                func: Callable,
+                z_pred: torch.Tensor,
+                writer: Callable | None = None,
+                **kwargs,
+            ) -> list[torch.Tensor]:
                 new_z_pred = func(z_pred)       # 1-step grad for df/dtheta
                 return [IFTGrad.apply(func, new_z_pred, writer)]
             return func_ift
-    
+
     # Phantom Grad
     else:
-        assert type(grad_type) is int and grad_type >= 1
+        if not (type(grad_type) is int and grad_type >= 1):
+            raise ValueError(f'grad_type must be "ift" or a positive int, got {grad_type}')
         n_grad_step = grad_type
-        
+
         if sup_gap > 0:
-            def sup_gap_grad_func(_, func, z_pred, **kwargs):
-                z_out = []
+            def sup_gap_grad_func(
+                _: torch.nn.Module,
+                func: Callable,
+                z_pred: torch.Tensor,
+                **kwargs,
+            ) -> list[torch.Tensor]:
+                z_out: list[torch.Tensor] = []
                 for i in range(n_grad_step):
                     z_pred = func(z_pred, tau=tau)
                     if (i+1) % sup_gap == 0:
@@ -197,8 +160,13 @@ def backward_factory(
                 return z_out
             return sup_gap_grad_func
         elif sup_loc:
-            def sup_loc_grad_func(_, func, z_pred, **kwargs):
-                z_out = []
+            def sup_loc_grad_func(
+                _: torch.nn.Module,
+                func: Callable,
+                z_pred: torch.Tensor,
+                **kwargs,
+            ) -> list[torch.Tensor]:
+                z_out: list[torch.Tensor] = []
                 for i in range(n_grad_step):
                     z_pred = func(z_pred, tau=tau)
                     if i+1 in sup_loc:
@@ -208,7 +176,12 @@ def backward_factory(
                 return z_out
             return sup_loc_grad_func
         else:
-            def grad_func(_, func, z_pred, **kwargs):
+            def grad_func(
+                _: torch.nn.Module,
+                func: Callable,
+                z_pred: torch.Tensor,
+                **kwargs,
+            ) -> list[torch.Tensor]:
                 for _ in range(n_grad_step):
                     z_pred = func(z_pred, tau=tau)
 

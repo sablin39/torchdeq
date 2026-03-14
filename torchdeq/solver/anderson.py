@@ -1,6 +1,8 @@
+from __future__ import annotations
+
 '''
 References:
-    https://github.com/locuslab/deq 
+    https://github.com/locuslab/deq
     https://github.com/pv/scipy-work/tree/master/scipy/optimize
 '''
 import torch

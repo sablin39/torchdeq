@@ -1,47 +1,47 @@
-'''
+from __future__ import annotations
+
+"""
 Credit to https://github.com/locuslab/deq/blob/master/lib/jacobian.py
-'''
+"""
+import math
 import torch
-import numpy as np
 
 
 __all__ = ['jac_reg', 'power_method']
 
 
-def jac_reg(f0, z0, vecs=1, create_graph=True):
+def jac_reg(f0: torch.Tensor, z0: torch.Tensor, vecs: int = 1, create_graph: bool = True) -> torch.Tensor:
     """
     Estimates tr(J^TJ)=tr(JJ^T) via Hutchinson estimator.
 
     Args:
-        f0 (torch.Tensor): Output of the function f (whose J is to be analyzed)
-        z0 (torch.Tensor): Input to the function f
-        vecs (int, optional): Number of random Gaussian vectors to use. Defaults to 2.
-        create_graph (bool, optional): Whether to create backward graph (e.g., to train on this loss). 
-                                       Defaults to True.
+        f0: Output of the function f (whose J is to be analyzed).
+        z0: Input to the function f.
+        vecs: Number of random Gaussian vectors to use. Default 1.
+        create_graph: Whether to create backward graph. Default True.
 
     Returns:
-        torch.Tensor: A 1x1 torch tensor that encodes the (shape-normalized) jacobian loss
+        A 1x1 tensor encoding the (shape-normalized) jacobian loss.
     """
-    vecs = vecs
     result = 0
     for i in range(vecs):
         v = torch.randn(*z0.shape).to(z0)
         vJ = torch.autograd.grad(f0, z0, v, retain_graph=True, create_graph=create_graph)[0]
         result += vJ.norm()**2
-    return result / vecs / np.prod(z0.shape)
+    return result / vecs / math.prod(z0.shape)
 
 
-def power_method(f0, z0, n_iters=100):
+def power_method(f0: torch.Tensor, z0: torch.Tensor, n_iters: int = 100) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Estimates the spectral radius of J using power method.
 
     Args:
-        f0 (torch.Tensor): Output of the function f (whose J is to be analyzed)
-        z0 (torch.Tensor): Input to the function f
-        n_iters (int, optional): Number of power method iterations. Default is 100.
+        f0: Output of the function f (whose J is to be analyzed).
+        z0: Input to the function f.
+        n_iters: Number of power method iterations. Default 100.
 
     Returns:
-        tuple: (largest eigenvector, largest (abs.) eigenvalue)
+        Tuple of (largest eigenvector, largest abs eigenvalue).
     """
     evector = torch.randn_like(z0)
     bsz = evector.shape[0]

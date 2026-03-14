@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 The `torchdeq.solver` module provides a set of solvers for finding fixed points in Deep Equilibrium Models (DEQs). 
 These solvers are used to iteratively refine the predictions of a DEQ model until they reach a stable state, or "equilibrium".
@@ -19,6 +21,8 @@ Example:
 
     >>> register_solver('newton', newton_solver)
 """
+from typing import Callable
+
 from .anderson import anderson_solver
 from .broyden import broyden_solver
 from .fp_iter import fixed_point_iter, simple_fixed_point_iter
@@ -37,40 +41,31 @@ _solvers = {
         }
 
 
-def get_solver(key):
+def get_solver(key: str) -> Callable:
     """
     Retrieves a fixed point solver from the registered solvers by its key.
 
-    Supported solvers: ``'anderson'``, ``'broyden'``, ``'fixed_point_iter'``, ``'simple_fixed_point_iter'``.
-
     Args:
-        key (str): The key of the solver to retrieve. This should match one of the keys used to register a solver.
+        key: The key of the solver to retrieve.
 
     Returns:
-        callable: The solver function associated with the provided key.
+        The solver function associated with the provided key.
 
     Raises:
-        AssertionError: If the key does not match any of the registered solvers.
-
-    Example:
-        >>> solver = get_solver('anderson')
+        KeyError: If the key does not match any of the registered solvers.
     """
-    assert key in _solvers
-
+    if key not in _solvers:
+        raise KeyError(f"Unknown solver '{key}'. Registered: {list(_solvers.keys())}")
     return _solvers[key]
 
 
-def register_solver(solver_type, solver):
+def register_solver(solver_type: str, solver: Callable) -> None:
     """
-    Registers a user-defined fixed point solver. 
-    This solver can be designated using args.f_solver and args.b_solver.
-
-    This method adds a new entry to the solver dict with the key as
-    the specified ``solver_type`` and the value as the ``solver``.
+    Registers a user-defined fixed point solver.
 
     Args:
-        solver_type (str): The type of solver to register. This will be used as the key in the solver dict.
-        solver_class (callable): The solver function. This will be used as the value in the solver dict.
+        solver_type: The type of solver to register.
+        solver: The solver function.
 
     Example:
         >>> register_solver('newton', newton_solver)
