@@ -15,6 +15,12 @@ import torch
 from torch import autograd
 from typing import Callable
 
+from .utils.mem import (
+    _capture_autocast_state,
+    _recompute_with_autocast,
+    mem_gc as checkpoint_mem_gc,
+)
+
 
 __all__ = ['backward_factory']
 
@@ -70,6 +76,28 @@ def backward_factory(
     if b_solver_kwargs is None:
         b_solver_kwargs = {}
 
+    def replay_with_mem_gc(
+        func: Callable,
+        z_pred: torch.Tensor,
+        *,
+        tau: float,
+        use_mem_gc: bool,
+        func_params,
+    ) -> torch.Tensor:
+        if not use_mem_gc:
+            return func(z_pred, tau=tau)
+
+        if func_params is None:
+            raise ValueError(
+                "PhantomGrad mem_gc replay requires func_params from the original nn.Module."
+            )
+
+        return checkpoint_mem_gc(
+            lambda z: func(z, tau=tau),
+            (z_pred,),
+            params=func_params,
+        )
+
     # IFT grad
     if grad_type == 'ift':
         if hook_ift:
@@ -105,6 +133,7 @@ def backward_factory(
                 @staticmethod
                 def forward(ctx, func: Callable, z_pred: torch.Tensor, writer: Callable | None) -> torch.Tensor:
                     ctx.func, ctx.writer = func, writer
+                    ctx.autocast_state = _capture_autocast_state()
                     ctx.save_for_backward(z_pred.detach())
                     return z_pred
 
@@ -116,7 +145,7 @@ def backward_factory(
 
                     h = z_pred.clone().detach().requires_grad_()
                     with torch.enable_grad():
-                        f = func(h)
+                        f = _recompute_with_autocast(func, ctx.autocast_state, h)
 
                     grad_f = lambda x: autograd.grad(f, h, x, retain_graph=True)[0] + grad
                     grad_star, _, info = b_solver(
@@ -152,8 +181,16 @@ def backward_factory(
                 **kwargs,
             ) -> list[torch.Tensor]:
                 z_out: list[torch.Tensor] = []
+                use_mem_gc = kwargs.get("mem_gc", False)
+                func_params = kwargs.get("func_params")
                 for i in range(n_grad_step):
-                    z_pred = func(z_pred, tau=tau)
+                    z_pred = replay_with_mem_gc(
+                        func,
+                        z_pred,
+                        tau=tau,
+                        use_mem_gc=use_mem_gc,
+                        func_params=func_params,
+                    )
                     if (i+1) % sup_gap == 0:
                         z_out.append(z_pred)
 
@@ -167,8 +204,16 @@ def backward_factory(
                 **kwargs,
             ) -> list[torch.Tensor]:
                 z_out: list[torch.Tensor] = []
+                use_mem_gc = kwargs.get("mem_gc", False)
+                func_params = kwargs.get("func_params")
                 for i in range(n_grad_step):
-                    z_pred = func(z_pred, tau=tau)
+                    z_pred = replay_with_mem_gc(
+                        func,
+                        z_pred,
+                        tau=tau,
+                        use_mem_gc=use_mem_gc,
+                        func_params=func_params,
+                    )
                     if i+1 in sup_loc:
                         z_out.append(z_pred)
                 z_out.append(z_pred)
@@ -182,8 +227,16 @@ def backward_factory(
                 z_pred: torch.Tensor,
                 **kwargs,
             ) -> list[torch.Tensor]:
+                use_mem_gc = kwargs.get("mem_gc", False)
+                func_params = kwargs.get("func_params")
                 for _ in range(n_grad_step):
-                    z_pred = func(z_pred, tau=tau)
+                    z_pred = replay_with_mem_gc(
+                        func,
+                        z_pred,
+                        tau=tau,
+                        use_mem_gc=use_mem_gc,
+                        func_params=func_params,
+                    )
 
                 return [z_pred]
             return grad_func

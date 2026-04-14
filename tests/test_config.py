@@ -21,6 +21,7 @@ class TestDEQConfigDefaults:
         assert config.grad == [1]
         assert config.indexing == []
         assert config.sup_loc == []
+        assert config.mem_gc is False
         assert config.norm_type == "weight_norm"
 
     def test_custom_construction(self):
@@ -54,6 +55,10 @@ class TestDEQConfigFromArgs:
     def test_overrides(self):
         config = DEQConfig.from_args({"f_max_iter": 10}, f_max_iter=20)
         assert config.f_max_iter == 20
+
+    def test_from_args_preserves_mem_gc(self):
+        config = DEQConfig.from_args({"mem_gc": True})
+        assert config.mem_gc is True
 
     def test_filters_unknown_keys(self):
         config = DEQConfig.from_args({"f_max_iter": 10, "unknown_thing": 42})

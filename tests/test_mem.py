@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 import torch
 import torch.nn as nn
 
@@ -32,6 +33,47 @@ class MultiOutputModule(nn.Module):
 
     def forward(self, x):
         return self.fc1(x), self.fc2(x)
+
+
+class BoundTensorModule(nn.Module):
+    def __init__(self, dim=4):
+        super().__init__()
+        self.linear = nn.Linear(dim, dim, bias=False)
+        self.context = None
+
+    def forward(self, x):
+        if self.context is None:
+            raise RuntimeError("context must be set before forward")
+        return self.linear(x + self.context)
+
+
+class AutocastReplayProbe(nn.Module):
+    def __init__(self, dim=4):
+        super().__init__()
+        self.linear = nn.Linear(dim, dim)
+        self.history = []
+
+    def forward(self, x):
+        self.history.append(
+            (
+                torch.is_grad_enabled(),
+                torch.is_autocast_enabled("cuda"),
+            )
+        )
+        return self.linear(x)
+
+
+class RequiresCudaAutocastModule(nn.Module):
+    def __init__(self, dim=4):
+        super().__init__()
+        self.linear = nn.Linear(dim, dim, bias=False)
+        with torch.no_grad():
+            self.linear.weight.mul_(0.1)
+
+    def forward(self, x):
+        if x.is_cuda and torch.is_grad_enabled() and not torch.is_autocast_enabled("cuda"):
+            raise RuntimeError("expected CUDA autocast during grad-enabled replay")
+        return self.linear(x)
 
 
 class TestFilterInput:
@@ -103,6 +145,14 @@ class TestFetchParams:
         m2 = nn.Linear(4, 4)
         params = DEQGradCkpt.fetch_params([m1, m2])
         assert len(params) == 4  # 2 params each
+
+    def test_includes_grad_requiring_tensor_attributes(self):
+        model = BoundTensorModule(4)
+        model.context = torch.randn(2, 4, requires_grad=True)
+
+        params = DEQGradCkpt.fetch_params(model)
+
+        assert any(param is model.context for param in params)
 
 
 class TestMemGC:
@@ -190,6 +240,38 @@ class TestMemGC:
         out.backward()
         assert model.param.grad is not None
 
+    def test_callable_with_explicit_params(self):
+        torch.manual_seed(0)
+        linear = nn.Linear(4, 4)
+        x = torch.randn(2, 4, requires_grad=True)
+
+        out = mem_gc(lambda t: linear(t), (x,), params=tuple(linear.parameters()))
+        out.sum().backward()
+
+        assert linear.weight.grad is not None
+        assert linear.bias.grad is not None
+        assert x.grad is not None
+
+    def test_module_tensor_attribute_receives_replay_gradient(self):
+        torch.manual_seed(0)
+        source = torch.randn(2, 4, requires_grad=True)
+        model = BoundTensorModule(4)
+        model.context = source * 2.0
+        x = torch.randn(2, 4, requires_grad=True)
+
+        out = mem_gc(model, (x,))
+        out.sum().backward()
+
+        assert source.grad is not None
+        assert source.grad.abs().sum() > 0
+        assert model.linear.weight.grad is not None
+
+    def test_non_module_requires_explicit_params(self):
+        x = torch.randn(2, 4, requires_grad=True)
+
+        with pytest.raises(TypeError, match="explicit params"):
+            mem_gc(lambda t: t * 2, (x,))
+
     def test_non_grad_input_gets_no_grad(self):
         model = SimpleLinear(4)
         x = torch.randn(2, 4, requires_grad=False)
@@ -216,3 +298,34 @@ class TestMemGC:
         z.sum().backward()
         assert model.linear.weight.grad is not None
         assert model.linear.weight.grad.abs().sum() > 0
+
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+    def test_backward_replay_restores_cuda_autocast_state(self):
+        torch.manual_seed(0)
+        model = AutocastReplayProbe(4).cuda()
+        x = torch.randn(2, 4, device="cuda", requires_grad=True)
+
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+            out = mem_gc(model, (x,))
+            loss = out.float().sum()
+        loss.backward()
+
+        assert len(model.history) == 2
+        assert model.history[0] == (False, True)
+        assert model.history[1] == (True, True)
+        assert model.linear.weight.grad is not None
+
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+    def test_cuda_bf16_replay_succeeds_with_restored_autocast(self):
+        torch.manual_seed(0)
+        model = RequiresCudaAutocastModule(4).cuda()
+        x = torch.randn(2, 4, device="cuda", requires_grad=True)
+
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+            out = mem_gc(model, (x,))
+            loss = out.float().pow(2).mean()
+        loss.backward()
+
+        assert torch.isfinite(loss).item()
+        assert model.linear.weight.grad is not None
+        assert torch.isfinite(model.linear.weight.grad).all().item()

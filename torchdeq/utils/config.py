@@ -48,6 +48,7 @@ class DEQConfig:
     tau: float = field(default=1.0, metadata={"help": "Damping factor for Phantom Grad."})
     sup_gap: int = field(default=-1, metadata={"help": "Sampling gap along PhantomGrad trajectories."})
     sup_loc: list[int] = field(default_factory=list, metadata={"help": "Sampling locations for PhantomGrad."})
+    mem_gc: bool = field(default=False, metadata={"help": "Use activation recompute for DEQ replay paths."})
 
     # Regularization
     jac_loss_weight: float = field(default=0.0, metadata={"help": "Jacobian regularization loss weight."})

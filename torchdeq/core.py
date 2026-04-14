@@ -32,6 +32,7 @@ from .grad import make_pair, backward_factory
 from .loss import power_method
 from .utils.config import DEQConfig
 from .utils.layer_utils import deq_decorator
+from .utils.mem import DEQGradCkpt, _capture_autocast_state, _recompute_with_autocast
 
 from .norm import reset_norm
 from .dropout import reset_dropout
@@ -101,11 +102,28 @@ class DEQBase(nn.Module):
         Returns:
             float: The spectral radius.
         """
+        autocast_state = _capture_autocast_state()
         with torch.enable_grad():
-            new_z_star = deq_func(z_star.requires_grad_())
+            new_z_star = _recompute_with_autocast(
+                deq_func,
+                autocast_state,
+                z_star.requires_grad_(),
+            )
         _, sradius = power_method(new_z_star, z_star, n_iters=100)
 
         return sradius
+
+    def _resolve_replay_params(self, func):
+        if not self.args.mem_gc:
+            return None
+
+        if not isinstance(func, nn.Module):
+            raise TypeError(
+                "DEQ mem_gc requires func to be an nn.Module. Wrap the DEQ function "
+                "in a module or call mem_gc(..., params=...) manually."
+            )
+
+        return tuple(DEQGradCkpt.fetch_params(func))
 
     def _solve_fixed_point(
             self, deq_func, z_init,
@@ -227,6 +245,7 @@ class DEQIndexing(DEQBase):
         """
         Defines the computation graph and gradients of DEQ.
         """
+        replay_params = self._resolve_replay_params(func)
         func = self._maybe_compile(func)
         deq_func, z_init = deq_decorator(func, z_init, no_stat=self.no_stat)
 
@@ -245,7 +264,14 @@ class DEQIndexing(DEQBase):
             z_out = []
             for z_pred, produce_grad in zip(trajectory, self.produce_grad):
                 z_pred = deq_func.detach(z_pred)
-                z_out += produce_grad(self, deq_func, z_pred, writer=backward_writer)
+                z_out += produce_grad(
+                    self,
+                    deq_func,
+                    z_pred,
+                    writer=backward_writer,
+                    mem_gc=self.args.mem_gc,
+                    func_params=replay_params,
+                )
 
             z_out = [deq_func.vec2list(each) for each in z_out]
         else:
@@ -350,6 +376,7 @@ class DEQSliced(DEQBase):
         """
         Defines the computation graph and gradients of DEQ.
         """
+        replay_params = self._resolve_replay_params(func)
         func = self._maybe_compile(func)
         deq_func, z_star = deq_decorator(func, z_star, no_stat=self.no_stat)
 
@@ -366,7 +393,14 @@ class DEQSliced(DEQBase):
             for f_max_iter, produce_grad in zip(indexing, self.produce_grad):
                 z_star, info = self._solve_fixed_point(deq_func, z_star, f_max_iter=f_max_iter, solver_kwargs=solver_kwargs)
                 z_star = deq_func.detach(z_star)
-                z_out += produce_grad(self, deq_func, z_star, writer=backward_writer)
+                z_out += produce_grad(
+                    self,
+                    deq_func,
+                    z_star,
+                    writer=backward_writer,
+                    mem_gc=self.args.mem_gc,
+                    func_params=replay_params,
+                )
                 z_star = z_out[-1]
 
             z_out = [deq_func.vec2list(each) for each in z_out]
@@ -374,7 +408,7 @@ class DEQSliced(DEQBase):
             z_star, info = self._solve_fixed_point(deq_func, z_star,
                     f_max_iter=solver_kwargs.get('f_max_iter', self.eval_f_max_iter), solver_kwargs=solver_kwargs)
 
-            sradius = self._sradius(deq_func, z_star) if sradius_mode else torch.zeros(1)
+            sradius = self._sradius(deq_func, z_star) if sradius_mode else torch.zeros(1, device=z_star.device)
             info['sradius'] = sradius
 
             z_out = [deq_func.vec2list(z_star)]

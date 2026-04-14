@@ -7,6 +7,19 @@ import torch.nn as nn
 from torchdeq.grad import backward_factory, make_pair
 
 
+class RequiresCudaAutocastIFT(nn.Module):
+    def __init__(self, dim=4):
+        super().__init__()
+        self.linear = nn.Linear(dim, dim, bias=False)
+        with torch.no_grad():
+            self.linear.weight.mul_(0.1)
+
+    def forward(self, z):
+        if z.is_cuda and torch.is_grad_enabled() and not torch.is_autocast_enabled("cuda"):
+            raise RuntimeError("expected CUDA autocast during IFT replay")
+        return 0.1 * self.linear(z)
+
+
 class TestMakePair:
     def test_equal_length(self):
         assert make_pair([1, 2, 3], [4, 5, 6]) == [4, 5, 6]
@@ -91,3 +104,27 @@ class TestIFTGrad:
     def test_invalid_grad_type_raises(self):
         with pytest.raises(ValueError):
             backward_factory(grad_type=-1)
+
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+    def test_ift_backward_replay_restores_cuda_autocast(self):
+        from torchdeq.solver.fp_iter import fixed_point_iter
+
+        func = backward_factory(
+            grad_type='ift',
+            hook_ift=False,
+            b_solver=fixed_point_iter,
+            b_solver_kwargs=dict(max_iter=10, tol=1e-6, stop_mode='abs')
+        )
+
+        trainer = nn.Module()
+        trainer.hook = None
+        module = RequiresCudaAutocastIFT().cuda()
+        z = torch.randn(2, 4, device="cuda")
+
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+            result = func(trainer, module, z)
+            loss = result[0].float().sum()
+        loss.backward()
+
+        assert module.linear.weight.grad is not None
+        assert torch.isfinite(module.linear.weight.grad).all().item()

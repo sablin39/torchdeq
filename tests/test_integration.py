@@ -102,3 +102,34 @@ class TestEndToEnd:
 
         assert z_out_eval[0].shape == (2, dim)
         assert 'abs_lowest' in info
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+class TestCUDAIntegration:
+    @pytest.mark.parametrize("core", ["sliced", "indexing"])
+    def test_mem_gc_training_under_cuda_autocast(self, core):
+        torch.manual_seed(42)
+        dim = 8
+        deq = get_deq(
+            core=core,
+            f_max_iter=6,
+            b_max_iter=6,
+            grad=[1],
+            mem_gc=True,
+        )
+        deq.train()
+        func = SimpleDEQFunc(dim).cuda()
+        target = torch.randn(4, dim, device="cuda")
+        z_init = torch.zeros(4, dim, device="cuda")
+
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+            z_out, info = deq(func, z_init)
+            loss = ((z_out[-1] - target) ** 2).mean()
+        loss.backward()
+
+        assert torch.isfinite(loss).item()
+        assert torch.isfinite(info["abs_lowest"]).all().item()
+        assert func.fc1.weight.grad is not None
+        assert torch.isfinite(func.fc1.weight.grad).all().item()
+        assert func.fc2.weight.grad is not None
+        assert torch.isfinite(func.fc2.weight.grad).all().item()

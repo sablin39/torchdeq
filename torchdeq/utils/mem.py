@@ -1,9 +1,67 @@
 from __future__ import annotations
 
+from contextlib import ExitStack, contextmanager
+from dataclasses import dataclass
+
 import torch
+import torch.nn as nn
 
 
 __all__ = ['mem_gc']
+
+
+@dataclass(frozen=True)
+class _AutocastState:
+    cuda_enabled: bool
+    cuda_dtype: torch.dtype
+    cpu_enabled: bool
+    cpu_dtype: torch.dtype
+
+
+def _capture_autocast_state() -> _AutocastState:
+    cuda_enabled = False
+    cuda_dtype = torch.float16
+    if torch.cuda.is_available():
+        cuda_enabled = torch.is_autocast_enabled("cuda")
+        cuda_dtype = torch.get_autocast_dtype("cuda")
+
+    return _AutocastState(
+        cuda_enabled=cuda_enabled,
+        cuda_dtype=cuda_dtype,
+        cpu_enabled=torch.is_autocast_enabled("cpu"),
+        cpu_dtype=torch.get_autocast_dtype("cpu"),
+    )
+
+
+@contextmanager
+def _restore_autocast_state(state: _AutocastState):
+    with ExitStack() as stack:
+        if torch.cuda.is_available():
+            stack.enter_context(
+                torch.autocast(
+                    device_type="cuda",
+                    dtype=state.cuda_dtype,
+                    enabled=state.cuda_enabled,
+                )
+            )
+        stack.enter_context(
+            torch.autocast(
+                device_type="cpu",
+                dtype=state.cpu_dtype,
+                enabled=state.cpu_enabled,
+            )
+        )
+        yield
+
+
+def _recompute_with_autocast(
+    func,
+    autocast_state: _AutocastState,
+    *args,
+    **kwargs,
+):
+    with _restore_autocast_state(autocast_state):
+        return func(*args, **kwargs)
 
 
 def filter_input(in_args):
@@ -108,12 +166,26 @@ class DEQGradCkpt(torch.autograd.Function):
             modules = [modules]
 
         params = []
+        seen = set()
+
+        def append_param(param):
+            if id(param) in seen:
+                return
+            params.append(param)
+            seen.add(id(param))
+
         for module in modules:
             if getattr(module, "_is_replica", False):
                 named_params = module._named_members(get_members_fn=DEQGradCkpt._find_params)
-                params += [param for _, param in named_params]
+                for _, param in named_params:
+                    append_param(param)
             else:
-                params += [param for param in module.parameters() if param.requires_grad]
+                for param in module.parameters():
+                    if param.requires_grad:
+                        append_param(param)
+                for child in module.modules():
+                    for _, param in DEQGradCkpt._find_params(child):
+                        append_param(param)
         
         return params
 
@@ -135,6 +207,7 @@ class DEQGradCkpt(torch.autograd.Function):
         """
         ctx.func = func
         ctx.in_args, ctx.params = args[:n_func_args], args[n_func_args:]
+        ctx.autocast_state = _capture_autocast_state()
 
         out = func(*ctx.in_args)
 
@@ -158,7 +231,11 @@ class DEQGradCkpt(torch.autograd.Function):
         forward_args, grad_args, grad_idx = filter_input(in_args)
 
         with torch.enable_grad():
-            out = func(*forward_args)
+            out = _recompute_with_autocast(
+                func,
+                ctx.autocast_state,
+                *forward_args,
+            )
         out = (out,) if torch.is_tensor(out) else out
         
         out_tensor, out_grad_tensor = filter_out(out, out_grad)
@@ -175,9 +252,9 @@ class DEQGradCkpt(torch.autograd.Function):
         return (None, None, *return_grad)
 
 
-def mem_gc(func, in_args=None):
+def mem_gc(func, in_args=None, params=None):
     """
-    Performs the forward and backward pass of a PyTorch Module using gradient checkpointing.
+    Performs the forward and backward pass of a callable using gradient checkpointing.
 
     This function is designed for use with iterative computational graphs and the PyTorch DDP training protocol. 
     In the forward pass, it does not store any activations. 
@@ -187,14 +264,25 @@ def mem_gc(func, in_args=None):
     It is particularly useful for creating computational graphs with constant memory complexity, i.e., :math:`\\mathcal{O}(1)` memory.
 
     Args:
-        func (torch.nn.Module): Pytorch Module for which gradients will be computed.
+        func (callable): Callable for which gradients will be computed.
         in_args (tuple, optional): Input arguments for the function. Default None.
+        params (Iterable[torch.Tensor], optional): Explicit parameters to differentiate
+            with respect to. When omitted, ``func`` must be a ``torch.nn.Module`` or a
+            list/tuple of modules so parameters can be discovered automatically.
 
     Returns:
         tuple: The output of the `func` Module.
     """
 
     in_args = in_args if in_args else ()
-    params = DEQGradCkpt.fetch_params(func)
+    if params is None:
+        if isinstance(func, (nn.Module, list, tuple)):
+            params = DEQGradCkpt.fetch_params(func)
+        else:
+            raise TypeError(
+                "mem_gc(func, ...) requires func to be an nn.Module or a list/tuple of modules "
+                "unless explicit params=... are provided."
+            )
+    else:
+        params = tuple(params)
     return DEQGradCkpt.apply(func, len(in_args), *in_args, *params)
-
