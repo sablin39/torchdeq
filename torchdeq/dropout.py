@@ -46,6 +46,15 @@ class _VariationalDropoutNd(nn.Module):
         self.dropout = dropout
         self.mask = None
 
+    def _make_mask(self, x, *shape):
+        if self.dropout == 1.0:
+            return x.new_zeros(shape).requires_grad_(False)
+
+        mask = x.new_empty(shape)
+        mask.bernoulli_(1 - self.dropout)
+        mask.div_(1 - self.dropout)
+        return mask.requires_grad_(False)
+
     def reset_mask(self, x):
         """
         Resets the dropout mask. 
@@ -101,9 +110,7 @@ class VariationalDropout(_VariationalDropoutNd):
         super().__init__(dropout)
 
     def reset_mask(self, x):
-        m = torch.zeros(*x.shape).bernoulli_(1 - self.dropout)
-        mask = m.requires_grad_(False) / (1 - self.dropout)
-        self.mask = mask
+        self.mask = self._make_mask(x, *x.shape)
 
 
 class VariationalDropout1d(_VariationalDropoutNd):
@@ -138,13 +145,11 @@ class VariationalDropout1d(_VariationalDropoutNd):
         if self.token_first:
             # Dimension (B, L, D)
             B, _, D = x.shape
-            m = torch.zeros(B, 1, D).bernoulli_(1 - self.dropout)
+            self.mask = self._make_mask(x, B, 1, D)
         else:
             # Dimension (B, D, L)
             B, D, _ = x.shape
-            m = torch.zeros(B, D, 1).bernoulli_(1 - self.dropout)
-        mask = m.requires_grad_(False) / (1 - self.dropout)
-        self.mask = mask
+            self.mask = self._make_mask(x, B, D, 1)
 
 
 class VariationalDropout2d(_VariationalDropoutNd):
@@ -178,13 +183,11 @@ class VariationalDropout2d(_VariationalDropoutNd):
         if self.token_first:
             # Dimension (B, H, W, D)
             B, _, _, D = x.shape
-            m = torch.zeros(B, 1, 1, D).bernoulli_(1 - self.dropout)
+            self.mask = self._make_mask(x, B, 1, 1, D)
         else:
             # Dimension (B, D, H, W)
             B, D, _, _ = x.shape
-            m = torch.zeros(B, D, 1, 1).bernoulli_(1 - self.dropout)
-        mask = m.requires_grad_(False) / (1 - self.dropout)
-        self.mask = mask
+            self.mask = self._make_mask(x, B, D, 1, 1)
 
 
 class VariationalDropout3d(_VariationalDropoutNd):
@@ -218,13 +221,11 @@ class VariationalDropout3d(_VariationalDropoutNd):
         if self.token_first:
             # Dimension (B, T, H, W, D)
             B, _, _, _, D = x.shape
-            m = torch.zeros(B, 1, 1, 1, D).bernoulli_(1 - self.dropout)
+            self.mask = self._make_mask(x, B, 1, 1, 1, D)
         else:
             # Dimension (B, D, T, H, W)
             B, D, _, _, _ = x.shape
-            m = torch.zeros(B, D, 1, 1, 1).bernoulli_(1 - self.dropout)
-        mask = m.requires_grad_(False) / (1 - self.dropout)
-        self.mask = mask
+            self.mask = self._make_mask(x, B, D, 1, 1, 1)
 
 
 class VariationalDropToken1d(_VariationalDropoutNd):
@@ -258,13 +259,11 @@ class VariationalDropToken1d(_VariationalDropoutNd):
         if self.token_first:
             # Dimension (B, L, D)
             B, L, _ = x.shape
-            m = torch.zeros(B, L, 1).bernoulli_(1 - self.dropout)
+            self.mask = self._make_mask(x, B, L, 1)
         else:
             # Dimension (B, D, L)
             B, _, L = x.shape
-            m = torch.zeros(B, 1, L).bernoulli_(1 - self.dropout)
-        mask = m.requires_grad_(False) / (1 - self.dropout)
-        self.mask = mask
+            self.mask = self._make_mask(x, B, 1, L)
 
 
 class VariationalDropToken2d(_VariationalDropoutNd):
@@ -298,13 +297,11 @@ class VariationalDropToken2d(_VariationalDropoutNd):
         if self.token_first:
             # Dimension (B, H, W, D)
             B, H, W, _ = x.shape
-            m = torch.zeros(B, H, W, 1).bernoulli_(1 - self.dropout)
+            self.mask = self._make_mask(x, B, H, W, 1)
         else:
             # Dimension (B, D, H, W)
             B, _, H, W = x.shape
-            m = torch.zeros(B, 1, H, W).bernoulli_(1 - self.dropout)
-        mask = m.requires_grad_(False) / (1 - self.dropout)
-        self.mask = mask
+            self.mask = self._make_mask(x, B, 1, H, W)
 
 
 class VariationalDropToken3d(_VariationalDropoutNd):
@@ -338,13 +335,11 @@ class VariationalDropToken3d(_VariationalDropoutNd):
         if self.token_first:
             # Dimension (B, T, H, W, D)
             B, T, H, W, _ = x.shape
-            m = torch.zeros(B, T, H, W, 1).bernoulli_(1 - self.dropout)
+            self.mask = self._make_mask(x, B, T, H, W, 1)
         else:
             # Dimension (B, D, T, H, W)
             B, _, T, H, W = x.shape
-            m = torch.zeros(B, 1, T, H, W).bernoulli_(1 - self.dropout)
-        mask = m.requires_grad_(False) / (1 - self.dropout)
-        self.mask = mask
+            self.mask = self._make_mask(x, B, 1, T, H, W)
 
 
 def reset_dropout(model: torch.nn.Module) -> None:

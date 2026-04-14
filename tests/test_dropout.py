@@ -55,6 +55,14 @@ class TestVariationalDropout:
         out = m(x)
         assert torch.allclose(out, x)
 
+    def test_full_dropout(self):
+        m = VariationalDropout(dropout=1.0)
+        m.train()
+        x = torch.ones(4, 8)
+        out = m(x)
+        assert torch.isfinite(out).all()
+        assert torch.allclose(out, torch.zeros_like(x))
+
     def test_invalid_dropout_raises(self):
         with pytest.raises(ValueError):
             VariationalDropout(dropout=1.5)
@@ -68,6 +76,19 @@ class TestVariationalDropout1d:
         x = torch.ones(2, 4, 8)  # (B, L, D)
         out = m(x)
         assert out.shape == x.shape
+
+    def test_mask_matches_input_device_and_dtype(self):
+        m = VariationalDropout1d(dropout=0.5, token_first=True)
+        m.train()
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
+        x = torch.ones(2, 4, 8, device=device, dtype=dtype)
+        out = m(x)
+        assert out.device == x.device
+        assert out.dtype == x.dtype
+        assert m.mask is not None
+        assert m.mask.device == x.device
+        assert m.mask.dtype == x.dtype
 
 
 class TestVariationalDropout2d:
