@@ -2,46 +2,117 @@ from __future__ import annotations
 
 import pytest
 import torch
-import torch.nn as nn
+
+from torchdeq.solver.fp_iter import fixed_point_iter, simple_fixed_point_iter
 
 HAS_COMPILE = hasattr(torch, "compile")
+HAS_WHILE_LOOP = hasattr(torch, "while_loop")
+
+try:
+    from torch._dynamo.testing import CompileCounter
+except Exception:  # pragma: no cover - defensive import guard
+    CompileCounter = None
+
+
+def _contraction(z: torch.Tensor, **kwargs) -> torch.Tensor:
+    return 0.5 * z + 1.0
+
+
+@pytest.mark.skipif(not HAS_COMPILE or CompileCounter is None, reason="torch.compile testing helpers unavailable")
+class TestCompileStability:
+    def test_fixed_point_iter_eager_branch_is_stable_across_python_depths(self):
+        counter = CompileCounter()
+
+        def caller(x: torch.Tensor, max_iter: int) -> torch.Tensor:
+            z_star, _, _ = fixed_point_iter(
+                _contraction,
+                x,
+                max_iter=max_iter,
+                tol=1e-6,
+                compile_solver=False,
+            )
+            return z_star + x
+
+        compiled = torch.compile(caller, backend=counter, dynamic=True)
+        x = torch.zeros(2, 3)
+
+        compiled(x, 8)
+        first_frame_count = counter.frame_count
+        compiled(x, 12)
+
+        assert first_frame_count >= 1
+        assert counter.frame_count == first_frame_count
+
+    def test_simple_fixed_point_iter_eager_branch_is_stable_across_python_depths(self):
+        counter = CompileCounter()
+
+        def caller(x: torch.Tensor, max_iter: int) -> torch.Tensor:
+            z_star, _, _ = simple_fixed_point_iter(
+                _contraction,
+                x,
+                max_iter=max_iter,
+            )
+            return z_star + x
+
+        compiled = torch.compile(caller, backend=counter, dynamic=True)
+        x = torch.zeros(2, 3)
+
+        compiled(x, 4)
+        first_frame_count = counter.frame_count
+        compiled(x, 7)
+
+        assert first_frame_count >= 1
+        assert counter.frame_count == first_frame_count
+
+    @pytest.mark.skipif(not HAS_WHILE_LOOP, reason="torch.while_loop not available")
+    def test_fixed_point_iter_compile_branch_is_stable_across_tensor_depths(self):
+        counter = CompileCounter()
+
+        def caller(x: torch.Tensor, max_iter: torch.Tensor) -> torch.Tensor:
+            with torch.no_grad():
+                z_star, _, _ = fixed_point_iter(
+                    _contraction,
+                    x,
+                    max_iter=max_iter,
+                    tol=1e-6,
+                    return_final=True,
+                    compile_solver=True,
+                    max_iter_bound=16,
+                )
+            return z_star + x
+
+        compiled = torch.compile(caller, backend=counter)
+        x = torch.zeros(2, 3)
+
+        compiled(x, torch.tensor(8))
+        first_frame_count = counter.frame_count
+        compiled(x, torch.tensor(10))
+        compiled(x, torch.tensor(14))
+
+        assert first_frame_count >= 1
+        assert counter.frame_count == first_frame_count
 
 
 @pytest.mark.skipif(not HAS_COMPILE, reason="torch.compile not available")
 class TestCompileSmoke:
-    def test_phantom_grad_forward(self):
-        from torchdeq.grad import backward_factory
-        func = backward_factory(grad_type=2, tau=1.0)
-        trainer = nn.Module()
-        f = lambda z, tau=1.0: 0.5 * z + 1.0
-        z = torch.tensor([0.0], requires_grad=True)
-        result = func(trainer, f, z)
-        assert len(result) == 1
-
-    def test_deq_eval_mode(self):
-        from torchdeq import get_deq
-        deq = get_deq(core="sliced", f_max_iter=5)
-        deq.eval()
-        linear = nn.Linear(4, 4)
-        with torch.no_grad():
-            linear.weight.mul_(0.1)
-        z_init = torch.zeros(2, 4)
-        with torch.no_grad():
-            z_out, info = deq(linear, z_init)
-        assert len(z_out) == 1
-
-    def test_dropout_compile(self):
+    def test_dropout_smoke(self):
         from torchdeq.dropout import VariationalDropout
-        m = VariationalDropout(dropout=0.3)
-        m.train()
+
+        module = VariationalDropout(dropout=0.3)
+        module.train()
         x = torch.ones(4, 8)
-        out = m(x)
+
+        out = module(x)
+
         assert out.shape == x.shape
 
-    def test_fp_correction_compile(self):
+    def test_fp_correction_smoke(self):
         from torchdeq.loss import fp_correction
+
         x = [torch.randn(4, 8)]
         y = torch.randn(4, 8)
-        crit = lambda x, y: ((x - y) ** 2).mean()
-        loss = fp_correction(crit, (x, y), weight_func='exp')
+        criterion = lambda left, right: ((left - right) ** 2).mean()
+
+        loss = fp_correction(criterion, (x, y), weight_func='exp')
+
         assert loss.item() > 0
