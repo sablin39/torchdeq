@@ -17,7 +17,7 @@ import torch.nn as nn
 __all__ = ['VariationalDropout', 
            'VariationalDropout1d', 'VariationalDropout2d', 'VariationalDropout3d', 
            'VariationalDropToken1d', 'VariationalDropToken2d', 'VariationalDropToken3d',
-           'reset_dropout']
+           'init_dropout', 'reset_dropout']
 
 
 class _VariationalDropoutNd(nn.Module):
@@ -80,7 +80,7 @@ class _VariationalDropoutNd(nn.Module):
 
         if self.mask is None:
             self.reset_mask(x)
-        mask = self.mask.expand_as(x)  # Make sure the dimension matches
+        mask = self.mask.expand_as(x).to(x.device)  # Make sure the dimension matches
         return mask * x
 
 
@@ -353,3 +353,18 @@ def reset_dropout(model: torch.nn.Module) -> None:
     for module in model.modules():
         if isinstance(module, _VariationalDropoutNd):
             module.mask = None
+
+
+def init_dropout(model: torch.nn.Module, x: torch.Tensor) -> None:
+    """
+    Initializes variational dropout masks for all variational dropout layers in
+    ``model`` using ``x`` as the representative input shape.
+
+    This is useful before running a compile-stable solver loop because
+    ``torch.while_loop`` cannot capture the lazy ``self.mask = ...`` mutation
+    that normally happens on the first dropout forward call.
+    """
+    for module in model.modules():
+        if isinstance(module, _VariationalDropoutNd):
+            module.reset_mask(x)
+            module.mask = module.mask.to(device=x.device)

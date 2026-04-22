@@ -78,18 +78,34 @@ class DEQBase(nn.Module):
 
         self.hook = None
         self._compile_fn = False
+        self._compile_solver = False
         self._compiled_func_cache = None
+
+    def _prepare_compile_solver_budget(self, z_ref, f_max_iter, max_iter_bound=None):
+        if torch.is_tensor(z_ref):
+            device = z_ref.device
+        elif isinstance(z_ref, (list, tuple)):
+            device = z_ref[0].device
+        else:
+            device = torch.device('cpu')
+
+        if torch.is_tensor(f_max_iter):
+            if f_max_iter.ndim != 0:
+                raise ValueError(
+                    f"compile solver requires scalar tensor f_max_iter, got shape={tuple(f_max_iter.shape)}"
+                )
+            bound = int(max_iter_bound if max_iter_bound is not None else int(f_max_iter.item()))
+            return f_max_iter.to(device=device, dtype=torch.int64), bound
+
+        bound = int(max_iter_bound if max_iter_bound is not None else f_max_iter)
+        return torch.tensor(int(f_max_iter), device=device, dtype=torch.int64), bound
 
     def _maybe_compile(self, func):
         """
-        Optionally wraps the user's function in ``torch.compile()`` for eval mode.
-        Cached so compilation only happens once.
+        The vendored TorchDEQ compile path now routes through a compile-stable solver.
+        Bound batch-specific functions are intentionally left uncompiled here.
         """
-        if not self._compile_fn or self.training:
-            return func
-        if self._compiled_func_cache is None:
-            self._compiled_func_cache = torch.compile(func)
-        return self._compiled_func_cache
+        return func
 
     def _sradius(self, deq_func, z_star):
         """
@@ -225,11 +241,14 @@ class DEQIndexing(DEQBase):
         """
         solver_kwargs = {k:v for k, v in solver_kwargs.items() if k != 'f_max_iter'}
         indexing = indexing if self.training else None
+        max_iter_bound = solver_kwargs.pop('max_iter_bound', self.f_max_iter)
 
         with torch.no_grad():
             z_star, trajectory, info = self.f_solver(
                     deq_func, x0=z_init, max_iter=f_max_iter,
                     tol=self.f_tol, stop_mode=self.f_stop_mode, indexing=indexing,
+                    compile_solver=self._compile_solver,
+                    max_iter_bound=max_iter_bound,
                     **solver_kwargs
                     )
 
@@ -255,6 +274,11 @@ class DEQIndexing(DEQBase):
         if self.training:
             if type(solver_kwargs.get('f_max_iter', None)) in [int, float]:
                 indexing = self._compute_f_iter(solver_kwargs['f_max_iter'])
+            elif torch.is_tensor(solver_kwargs.get('f_max_iter', None)):
+                raise ValueError(
+                    "DEQIndexing does not support tensor f_max_iter with compile solver. "
+                    "Use a static Python int iteration budget or the sliced core."
+                )
             else:
                 indexing = self.indexing
 
@@ -275,8 +299,22 @@ class DEQIndexing(DEQBase):
 
             z_out = [deq_func.vec2list(each) for each in z_out]
         else:
-            z_star, _, info = self._solve_fixed_point(deq_func, z_init,
-                    f_max_iter=solver_kwargs.get('f_max_iter', self.eval_f_max_iter), solver_kwargs=solver_kwargs)
+            eval_solver_kwargs = dict(solver_kwargs)
+            eval_f_max_iter = solver_kwargs.get('f_max_iter', self.eval_f_max_iter)
+            if self._compile_solver:
+                eval_f_max_iter, eval_max_iter_bound = self._prepare_compile_solver_budget(
+                    z_init,
+                    eval_f_max_iter,
+                    max_iter_bound=eval_solver_kwargs.get('max_iter_bound'),
+                )
+                eval_solver_kwargs['max_iter_bound'] = eval_max_iter_bound
+
+            z_star, _, info = self._solve_fixed_point(
+                deq_func,
+                z_init,
+                f_max_iter=eval_f_max_iter,
+                solver_kwargs=eval_solver_kwargs,
+            )
 
             sradius = self._sradius(deq_func, z_star) if sradius_mode else torch.zeros(1, device=z_star.device)
             info['sradius'] = sradius
@@ -346,6 +384,32 @@ class DEQSliced(DEQBase):
         else:
             return np.diff([0, *self.args.indexing, f_max_iter]).tolist()
 
+    def _compile_f_iter(self, f_max_iter: torch.Tensor):
+        if f_max_iter.ndim != 0:
+            raise ValueError(
+                f"compile solver requires scalar tensor f_max_iter, got shape={tuple(f_max_iter.shape)}"
+            )
+        if self.args.n_states > 1:
+            return [
+                torch.div(
+                    f_max_iter,
+                    self.args.n_states,
+                    rounding_mode='floor',
+                ).to(torch.int64)
+                for _ in range(self.args.n_states)
+            ]
+        if self.args.indexing:
+            raise ValueError(
+                "DEQSliced compile solver does not support tensor f_max_iter with explicit indexing. "
+                "Use a static Python int iteration budget or remove indexing."
+            )
+        return [f_max_iter.to(torch.int64)]
+
+    def _compile_f_iter_bound(self):
+        if self.args.n_states > 1:
+            return max(1, self.f_max_iter // self.args.n_states)
+        return self.f_max_iter
+
     def _solve_fixed_point(
             self, deq_func, z_init,
             f_max_iter=None,
@@ -356,11 +420,14 @@ class DEQSliced(DEQBase):
         Solves for the fixed point using the DEQ solver.
         """
         solver_kwargs = {k:v for k, v in solver_kwargs.items() if k != 'f_max_iter'}
+        max_iter_bound = solver_kwargs.pop('max_iter_bound', self.f_max_iter)
 
         with torch.no_grad():
             z_star, _, info = self.f_solver(
                     deq_func, x0=z_init, max_iter=f_max_iter,
                     tol=self.f_tol, stop_mode=self.f_stop_mode,
+                    compile_solver=self._compile_solver,
+                    max_iter_bound=max_iter_bound,
                     **solver_kwargs
                     )
 
@@ -386,12 +453,22 @@ class DEQSliced(DEQBase):
         if self.training:
             if type(solver_kwargs.get('f_max_iter', None)) in [int, float]:
                 indexing = self._compute_f_iter(solver_kwargs['f_max_iter'])
+                max_iter_bound = self.f_max_iter
+            elif torch.is_tensor(solver_kwargs.get('f_max_iter', None)):
+                indexing = self._compile_f_iter(solver_kwargs['f_max_iter'])
+                max_iter_bound = self._compile_f_iter_bound()
             else:
                 indexing = self.indexing
+                max_iter_bound = self.f_max_iter
 
             z_out = []
             for f_max_iter, produce_grad in zip(indexing, self.produce_grad):
-                z_star, info = self._solve_fixed_point(deq_func, z_star, f_max_iter=f_max_iter, solver_kwargs=solver_kwargs)
+                z_star, info = self._solve_fixed_point(
+                    deq_func,
+                    z_star,
+                    f_max_iter=f_max_iter,
+                    solver_kwargs={**solver_kwargs, 'max_iter_bound': max_iter_bound},
+                )
                 z_star = deq_func.detach(z_star)
                 z_out += produce_grad(
                     self,
@@ -405,9 +482,22 @@ class DEQSliced(DEQBase):
 
             z_out = [deq_func.vec2list(each) for each in z_out]
         else:
-            z_star, info = self._solve_fixed_point(deq_func, z_star,
-                    f_max_iter=solver_kwargs.get('f_max_iter', self.eval_f_max_iter), solver_kwargs=solver_kwargs)
+            eval_solver_kwargs = dict(solver_kwargs)
+            eval_f_max_iter = solver_kwargs.get('f_max_iter', self.eval_f_max_iter)
+            if self._compile_solver:
+                eval_f_max_iter, eval_max_iter_bound = self._prepare_compile_solver_budget(
+                    z_star,
+                    eval_f_max_iter,
+                    max_iter_bound=eval_solver_kwargs.get('max_iter_bound'),
+                )
+                eval_solver_kwargs['max_iter_bound'] = eval_max_iter_bound
 
+            z_star, info = self._solve_fixed_point(
+                deq_func,
+                z_star,
+                f_max_iter=eval_f_max_iter,
+                solver_kwargs=eval_solver_kwargs,
+            )
             sradius = self._sradius(deq_func, z_star) if sradius_mode else torch.zeros(1, device=z_star.device)
             info['sradius'] = sradius
 
@@ -442,8 +532,7 @@ def get_deq(args=None, compile_fn: bool = False, **kwargs):
 
     Args:
         args: Configuration (argparse.Namespace, dict, DEQConfig, or None). Default None.
-        compile_fn: If True, wrap the user's function in ``torch.compile()`` during eval mode
-            for faster solver iterations. Default False.
+        compile_fn: If True, enable the compile-stable forward solver path. Default False.
         **kwargs: Additional keyword arguments to override config.
 
     Returns:
@@ -459,7 +548,8 @@ def get_deq(args=None, compile_fn: bool = False, **kwargs):
         raise KeyError(f"Unknown DEQ core '{config.core}'. Registered: {list(_core.keys())}")
 
     deq = _core[config.core](config)
-    deq._compile_fn = compile_fn
+    deq._compile_fn = False
+    deq._compile_solver = compile_fn
     return deq
 
 

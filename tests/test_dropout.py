@@ -5,7 +5,7 @@ import torch
 
 from torchdeq.dropout import (
     VariationalDropout, VariationalDropout1d, VariationalDropout2d,
-    reset_dropout,
+    init_dropout, reset_dropout,
 )
 
 
@@ -113,3 +113,19 @@ class TestResetDropout:
         assert model[0].mask is not None
         reset_dropout(model)
         assert model[0].mask is None
+
+
+class TestInitDropout:
+    def test_initializes_masks_with_representative_input(self):
+        model = torch.nn.Sequential(
+            VariationalDropout1d(dropout=0.5, token_first=True),
+            torch.nn.Identity(),
+        )
+        model.train()
+        x = torch.ones(2, 4, 8)
+
+        init_dropout(model, x)
+
+        assert model[0].mask is not None
+        assert model[0].mask.shape == (2, 1, 8)
+        assert model[0].mask.device == x.device
