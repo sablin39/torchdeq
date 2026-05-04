@@ -9,7 +9,7 @@ import torch
 
 __all__ = ['jac_reg', 'power_method']
 
-
+@torch.compiler.disable
 def jac_reg(f0: torch.Tensor, z0: torch.Tensor, vecs: int = 1, create_graph: bool = True) -> torch.Tensor:
     """
     Estimates tr(J^TJ)=tr(JJ^T) via Hutchinson estimator.
